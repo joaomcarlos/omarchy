@@ -114,7 +114,11 @@ def run_scan(conn: sqlite3.Connection) -> dict[str, Any]:
   model_usage: dict[str, dict[str, int]] = {}
   active_dates: set[str] = set()
 
-  rows = conn.execute(
+  # json_extract raises on malformed JSON, aborting the whole query — and the
+  # direct-scan fallback — on a single bad row. CASE only evaluates the
+  # matching branch, so invalid chat_message rows are skipped instead; a bare
+  # AND would not order json_valid before json_extract.
+  for row in conn.execute(
     """
     SELECT
       date(mn.created_at, 'unixepoch', 'localtime') AS day,
@@ -124,11 +128,11 @@ def run_scan(conn: sqlite3.Connection) -> dict[str, Any]:
       json_extract(mn.chat_message, '$.metadata.metrics.cache_creation_tokens') AS cache_creation_tokens,
       json_extract(mn.chat_message, '$.metadata.generation_model') AS model
     FROM message_nodes mn
-    WHERE json_extract(mn.chat_message, '$.metadata.metrics') IS NOT NULL
+    WHERE CASE WHEN json_valid(mn.chat_message)
+               THEN json_extract(mn.chat_message, '$.metadata.metrics') IS NOT NULL
+               ELSE 0 END
     """
-  ).fetchall()
-
-  for row in rows:
+  ):
     inp = number(row["input_tokens"])
     out = number(row["output_tokens"])
     cache_read = number(row["cache_read_tokens"])
@@ -153,7 +157,11 @@ def run_scan(conn: sqlite3.Connection) -> dict[str, Any]:
     if day == date_string(today):
       today_by_model[model] = today_by_model.get(model, 0) + total
 
-  prompt_rows = conn.execute(
+  today_prompts = 0
+  today_sessions = 0
+  total_prompts = 0
+
+  for row in conn.execute(
     """
     SELECT
       date(timestamp, 'unixepoch', 'localtime') AS day,
@@ -162,22 +170,19 @@ def run_scan(conn: sqlite3.Connection) -> dict[str, Any]:
     FROM prompt_history
     GROUP BY day
     """
-  ).fetchall()
-
-  today_prompts = 0
-  today_sessions = 0
-  total_prompts = 0
-  total_sessions = 0
-
-  for row in prompt_rows:
+  ):
     day = row["day"] or local_date_string()
     prompts = number(row["prompts"])
-    sessions = number(row["sessions"])
     total_prompts += prompts
-    total_sessions += sessions
     if day == date_string(today):
       today_prompts = prompts
-      today_sessions = sessions
+      today_sessions = number(row["sessions"])
+
+  # Per-day distinct counts can't be summed: a session spanning midnight
+  # belongs to two days. All-time sessions need their own distinct count.
+  total_sessions = number(
+    conn.execute("SELECT COUNT(DISTINCT session_id) FROM prompt_history").fetchone()[0]
+  )
 
   return {
     "todayPrompts": today_prompts,
@@ -287,6 +292,16 @@ def user_status_dir() -> Path:
   return Path(os.environ.get("DEVIN_CACHE_DIR") or (Path.home() / ".cache" / "devin" / "cli"))
 
 
+def credentials_mtime() -> float | None:
+  # The CLI rewrites credentials.toml on sign-in, so a user-status file fetched
+  # before that write describes a previous account. The fetch can land a beat
+  # before the file flush, hence the small skew allowance.
+  try:
+    return (data_dir().parent / "credentials.toml").stat().st_mtime - 30
+  except OSError:
+    return None
+
+
 def _decode_varint(data: bytes, pos: int) -> tuple[int, int]:
   result = 0
   shift = 0
@@ -354,21 +369,21 @@ def _limit_window_open(entry: dict[str, Any], now: dt.datetime) -> bool:
 
 
 def parse_quota() -> dict[str, Any]:
-  """Read the most recent user-status cache and return limits + tier label.
+  """Read the user-status caches and return limits + tier label.
 
   The PlanStatus nested message carries daily/weekly quota percentages and
-  reset timestamps. Multiple cache files may exist (one per identity); the
-  most recently fetched one wins.
+  reset timestamps. Multiple cache files may exist (one per sign-in session),
+  and the CLI exposes no active-identity marker. The freshest fetch wins, but
+  files fetched before the last credentials write belong to a signed-out
+  account: after a switch with no fetch since, nothing qualifies and no quota
+  is reported rather than the previous account's. Without a credentials file
+  to date the sign-in, stale data beats none.
   """
-  best: dict[str, Any] = {}
-  best_age: float | None = None
+  candidates: list[tuple[float, dict[str, Any]]] = []
   for path in sorted(user_status_dir().glob("user_status.*.bin")):
     try:
       cache = json.loads(path.read_text(encoding="utf-8"))
-      fetched_at = cache.get("fetched_at_secs", 0)
-      age = time.time() - fetched_at if fetched_at else float("inf")
-      if best_age is not None and age >= best_age:
-        continue
+      fetched_at = number(cache.get("fetched_at_secs"))
       payload_b64 = cache.get("payload")
       if not payload_b64:
         continue
@@ -403,14 +418,18 @@ def parse_quota() -> dict[str, Any]:
         })
       now = dt.datetime.now(dt.timezone.utc)
       limits = [e for e in limits if _limit_window_open(e, now)]
-      best = {
+      candidates.append((fetched_at, {
         "tierLabel": plan_name or "",
         "limits": limits,
-      }
-      best_age = age
+      }))
     except Exception:
       continue
-  return best
+  cutoff = credentials_mtime()
+  if cutoff is not None:
+    candidates = [c for c in candidates if c[0] >= cutoff]
+  if not candidates:
+    return {}
+  return max(candidates, key=lambda c: c[0])[1]
 
 
 # -------------------------------------------------------------------- record
@@ -450,6 +469,11 @@ def scan(force: bool = False, limits_only: bool = False) -> dict[str, Any]:
 
   path = db_path()
   if not path.is_file():
+    if quota.get("limits"):
+      # A live status cache means the CLI ran under this account; the database
+      # is absent or lives elsewhere, so this is "no local stats", not "not
+      # installed".
+      return base_record(ready=True, **quota)
     return base_record(usageStatusText="Devin CLI not installed", authHelpText="Install it with: curl -fsSL https://cli.devin.ai/install.sh | bash", **quota)
 
   conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)

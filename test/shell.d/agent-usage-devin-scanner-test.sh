@@ -58,11 +58,18 @@ conn.execute("INSERT INTO message_nodes (session_id, node_id, chat_message, crea
 conn.execute("INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES (?, 5, ?, ?)",
              ("s1", json.dumps({"metadata": {}}), now))
 
-# Prompt history: 3 prompts today across 2 sessions, 1 yesterday
+# A malformed row must not abort the whole scan
+conn.execute("INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES (?, 6, ?, ?)",
+             ("s1", "{not json", now))
+
+# Prompt history: 3 prompts today across 2 sessions, 2 yesterday — one prompt
+# belongs to today's session s1, so per-day session counts sum to 4 while the
+# true distinct total is 3
 conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's1', 0)", ("hello", now))
 conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's1', 0)", ("world", now))
 conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's3', 0)", ("test", now))
 conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's2', 0)", ("yesterday", now - 86400))
+conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's1', 0)", ("late night", now - 86400))
 
 conn.commit()
 conn.close()
@@ -91,12 +98,13 @@ pass "Devin collector counts today's prompts and sessions"
   fail "Devin collector aggregates devin-pro model usage" "$result"
 pass "Devin collector aggregates model usage correctly"
 
-# Total prompts = 4 (3 today + 1 yesterday), total sessions = 3 (s1, s2, s3)
-[[ $(jq -r '.totalPrompts' <<<"$result") == "4" ]] ||
+# Total prompts = 5 (3 today + 2 yesterday); total sessions = 3 distinct
+# (s1, s2, s3) — s1 spans midnight and must not count twice
+[[ $(jq -r '.totalPrompts' <<<"$result") == "5" ]] ||
   fail "Devin collector counts total prompts" "$result"
 [[ $(jq -r '.totalSessions' <<<"$result") == "3" ]] ||
-  fail "Devin collector counts total sessions" "$result"
-pass "Devin collector counts total prompts and sessions"
+  fail "Devin collector counts a midnight-spanning session once" "$result"
+pass "Devin collector counts total prompts and dedupes cross-day sessions"
 
 # Active days = 2 (today + yesterday)
 [[ $(jq -r '.activeDays' <<<"$result") == "2" ]] ||
@@ -240,3 +248,38 @@ result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
 [[ $(jq -r '.limits[1].percent' <<<"$result") == "0.47" ]] ||
   fail "Devin collector reports weekly limit percent (47% used = 53% remaining)" "$result"
 pass "Devin collector parses quota from user-status cache"
+
+# Quota without a session database: the status cache alone means the CLI has
+# run, so the record is ready with limits rather than "not installed"
+rm "$DEVIN_DATA_DIR/sessions.db"
+result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
+  "$ROOT/bin/omarchy-agent-usage-devin" --force)
+[[ $(jq -r '.ready' <<<"$result") == "true" ]] ||
+  fail "Devin collector stays ready on quota without a session database" "$result"
+[[ $(jq -r '.limits | length' <<<"$result") == "2" ]] ||
+  fail "Devin collector keeps limits without a session database" "$result"
+[[ $(jq -r '.usageStatusText' <<<"$result") == "" ]] ||
+  fail "Devin collector drops the install hint when quota proves the CLI ran" "$result"
+pass "Devin collector reports quota without a session database"
+
+# Status caches fetched under a previous sign-in are dropped: once
+# credentials.toml is newer than every fetch, no quota is reported rather than
+# the signed-out account's
+creds="$TEST_HOME/.local/share/devin/credentials.toml"
+echo 'api_server_url = "https://api.devin.ai"' >"$creds"
+touch -d "@$((now + 7200))" "$creds"
+result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
+  "$ROOT/bin/omarchy-agent-usage-devin" --force)
+[[ $(jq -r '.tierLabel' <<<"$result") == "" ]] ||
+  fail "Devin collector drops quota fetched before the last sign-in" "$result"
+[[ $(jq -c '.limits' <<<"$result") == "[]" ]] ||
+  fail "Devin collector drops limits fetched before the last sign-in" "$result"
+pass "Devin collector drops status caches from before the last sign-in"
+
+# A credentials file older than the caches leaves the freshest fetch winning
+touch -d "@$((now - 7200))" "$creds"
+result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
+  "$ROOT/bin/omarchy-agent-usage-devin" --force)
+[[ $(jq -r '.tierLabel' <<<"$result") == "Pro" ]] ||
+  fail "Devin collector serves quota fetched under the current credentials" "$result"
+pass "Devin collector serves quota fetched under the current credentials"
