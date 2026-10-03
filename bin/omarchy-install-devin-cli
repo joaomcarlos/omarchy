@@ -12,19 +12,32 @@ set -euo pipefail
 
 mode=${1:-}
 
+# The upstream installer links devin under ~/.local/bin. A devin there counts
+# even when this process's PATH predates the directory — launches open a
+# fresh, profile-loaded shell.
+devin_present() {
+  omarchy-cmd-present devin || [[ -x $HOME/.local/bin/devin ]]
+}
+
 case "$mode" in
   --check)
-    omarchy-cmd-present devin
+    devin_present
     ;;
   --now)
-    if omarchy-cmd-present devin; then
+    if devin_present; then
       exit 0
     fi
     bash -c 'set -o pipefail; curl -fsSL https://cli.devin.ai/install.sh | bash'
+    # A successful installer run can still leave nothing to launch (broken
+    # symlink, interrupted write); the next step execs the bare command.
+    if ! devin_present; then
+      echo "The Devin installer finished, but no devin command is on PATH or at ~/.local/bin." >&2
+      exit 1
+    fi
     ;;
   --owns)
     # Devin's installer owns the binary; we don't manage a wrapper.
-    omarchy-cmd-present devin
+    devin_present
     ;;
   "")
     echo "Usage: omarchy-install-devin-cli <--check|--now|--owns>" >&2
