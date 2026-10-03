@@ -31,7 +31,7 @@ ori | openrouter) agent="ori"; name="Ori"; agent_package="github:OpenRouterLabs/
 claude | claude-code) agent="claude"; name="Claude Code" ;;
 codex) agent="codex"; name="Codex" ;;
 crush) agent="crush"; name="Crush" ;;
-grok) agent="grok"; name="Grok"; agent_package="npm:@xai-official/grok" ;;
+grok) agent="grok"; name="Grok" ;;
 openclaw) agent="openclaw"; name="OpenClaw"; agent_installer="omarchy-install-openclaw-cli" ;;
 agy | antigravity | antigravity-cli | gemini | gemini-cli) agent="agy"; name="Antigravity"; agent_package="antigravity-cli" ;;
 hermes) agent="hermes"; name="Hermes"; agent_installer="omarchy-install-hermes-cli" ;;
@@ -51,12 +51,12 @@ esac
 
 agent_package=${agent_package:-$agent}
 
-# Hermes, OpenClaw, and Devin are not mise tools: Hermes is the desktop app's
-# self-updating runtime, OpenClaw comes from its pacman package, and Devin
-# ships its own shell installer. Each has an installer with the same
-# --check/--now contract mise-backed agents get from mise; see
-# omarchy-install-hermes-cli, omarchy-install-openclaw-cli, and
-# omarchy-install-devin-cli.
+# Hermes, OpenClaw, and Devin are not mise tools: Hermes and OpenClaw are
+# self-updating runtimes in the user's home, Hermes the desktop app's and
+# OpenClaw the one its Control UI updates, and Devin ships its own shell
+# installer. Each has an installer with the same --check/--now contract
+# mise-backed agents get from mise; see omarchy-install-hermes-cli,
+# omarchy-install-openclaw-cli, and omarchy-install-devin-cli.
 if [[ -n ${agent_installer:-} ]]; then
   # Not omarchy-cmd-present: a command on PATH says nothing about whether the
   # install behind it finished or runs the sessions omarchy-agent starts.
