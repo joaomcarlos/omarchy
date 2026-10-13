@@ -247,6 +247,10 @@ result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
   fail "Devin collector reports weekly limit label" "$result"
 [[ $(jq -r '.limits[1].percent' <<<"$result") == "0.47" ]] ||
   fail "Devin collector reports weekly limit percent (47% used = 53% remaining)" "$result"
+[[ $(jq -r '.limitsStale' <<<"$result") == "false" ]] ||
+  fail "Devin collector marks a just-fetched status cache as current" "$result"
+[[ $(jq -r '.limitsFetchedAt' <<<"$result") == "$((now * 1000))" ]] ||
+  fail "Devin collector reports when the status cache was fetched" "$result"
 pass "Devin collector parses quota from user-status cache"
 
 # Quota without a session database: the status cache alone means the CLI has
@@ -283,6 +287,28 @@ result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
 [[ $(jq -r '.tierLabel' <<<"$result") == "Pro" ]] ||
   fail "Devin collector serves quota fetched under the current credentials" "$result"
 pass "Devin collector serves quota fetched under the current credentials"
+
+# A status cache older than the freshness window keeps its limits but is
+# flagged stale, with its fetch time reported so the panel can warn
+python3 - "$TEST_HOME/.cache/devin/cli/user_status.test123.bin" "$now" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    cache = json.load(f)
+cache["fetched_at_secs"] = int(sys.argv[2]) - 3600
+with open(path, "w") as f:
+    json.dump(cache, f)
+PY
+
+result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
+  "$ROOT/bin/omarchy-agent-usage-devin" --force)
+[[ $(jq -r '.limitsStale' <<<"$result") == "true" ]] ||
+  fail "Devin collector flags an old status cache as stale" "$result"
+[[ $(jq -r '.limitsFetchedAt' <<<"$result") == "$(( (now - 3600) * 1000 ))" ]] ||
+  fail "Devin collector reports the stale cache's fetch time" "$result"
+[[ $(jq -r '.limits | length' <<<"$result") == "2" ]] ||
+  fail "Devin collector keeps limits from a stale cache" "$result"
+pass "Devin collector flags old quota as stale with its fetch time"
 
 # A damaged session database must not hide working quota: the scan fails, but
 # the limits already read from the user-status cache still render, with the

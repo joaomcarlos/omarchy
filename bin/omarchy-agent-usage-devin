@@ -43,6 +43,11 @@ AGENT_NAME = "Devin"
 SCAN_REUSE_SECONDS = 20
 LIMITS_ONLY_REUSE_SECONDS = 900
 
+# Devin's quota comes from a cache the TUI writes, never a live fetch, and
+# cloud sessions keep spending it meanwhile. Numbers this recent still
+# describe the account; older ones are flagged stale with their fetch time.
+LIMITS_CURRENT_ENOUGH_SECONDS = 900
+
 
 def data_dir() -> Path:
   return Path(os.environ.get("DEVIN_DATA_DIR") or (Path.home() / ".local" / "share" / "devin" / "cli"))
@@ -431,7 +436,10 @@ def parse_quota() -> dict[str, Any]:
     candidates = [c for c in candidates if c[0] >= cutoff]
   if not candidates:
     return {}
-  return max(candidates, key=lambda c: c[0])[1]
+  fetched_at, quota = max(candidates, key=lambda c: c[0])
+  quota["limitsFetchedAt"] = fetched_at * 1000
+  quota["limitsStale"] = time.time() - fetched_at > LIMITS_CURRENT_ENOUGH_SECONDS
+  return quota
 
 
 # -------------------------------------------------------------------- record
@@ -449,6 +457,8 @@ def base_record(**overrides: Any) -> dict[str, Any]:
     "usageStatusText": "",
     "authHelpText": "",
     "limits": [],
+    "limitsStale": False,
+    "limitsFetchedAt": 0,
   }
   record.update({
     "todayPrompts": 0,
