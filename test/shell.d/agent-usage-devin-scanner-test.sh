@@ -283,3 +283,18 @@ result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
 [[ $(jq -r '.tierLabel' <<<"$result") == "Pro" ]] ||
   fail "Devin collector serves quota fetched under the current credentials" "$result"
 pass "Devin collector serves quota fetched under the current credentials"
+
+# A damaged session database must not hide working quota: the scan fails, but
+# the limits already read from the user-status cache still render, with the
+# database error reported alongside
+rm -f "$TEST_HOME/.cache/omarchy/agent-usage/devin-scan-"*
+echo "not a database" > "$DEVIN_DATA_DIR/sessions.db"
+result=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
+  "$ROOT/bin/omarchy-agent-usage-devin" --force)
+[[ $(jq -r '.usageStatusText' <<<"$result") == "Devin usage unavailable" ]] ||
+  fail "Devin collector reports an unreadable session database" "$result"
+[[ $(jq -r '.ready' <<<"$result") == "true" ]] ||
+  fail "Devin collector stays ready on quota with an unreadable database" "$result"
+[[ $(jq -r '.limits | length' <<<"$result") == "2" ]] ||
+  fail "Devin collector keeps quota when the session database is unreadable" "$result"
+pass "Devin collector keeps quota when the session database is unreadable"

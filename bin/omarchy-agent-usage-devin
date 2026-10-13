@@ -257,6 +257,8 @@ def cached_scan(conn: sqlite3.Connection, force: bool, limits_only: bool) -> dic
   max_age = 0 if force else (LIMITS_ONLY_REUSE_SECONDS if limits_only else SCAN_REUSE_SECONDS)
   try:
     return _cached_scan(conn, max_age)
+  except sqlite3.Error:
+    raise  # a database failure is not a cache-layer problem
   except Exception as exc:
     print(f"omarchy-agent-usage-devin: cache unavailable ({exc}); scanning directly", file=sys.stderr)
     return run_scan(conn)
@@ -476,15 +478,28 @@ def scan(force: bool = False, limits_only: bool = False) -> dict[str, Any]:
       return base_record(ready=True, **quota)
     return base_record(usageStatusText="Devin CLI not installed", authHelpText="Install it with: curl -fsSL https://cli.devin.ai/install.sh | bash", **quota)
 
-  conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-  conn.row_factory = sqlite3.Row
-  conn.execute("PRAGMA query_only = ON")
+  conn = None
   try:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
     stats = cached_scan(conn, force, limits_only)
     ready = number(stats.get("totalPrompts")) > 0 or len(quota.get("limits", [])) > 0
     return base_record(ready=ready, hasLocalStats=True, **stats, **quota)
+  except Exception as error:
+    # A locked or damaged history database must not hide quota already read
+    # from the user-status cache; it only costs the local stats.
+    detail = str(error) if isinstance(error, sqlite3.Error) else f"{type(error).__name__}: {error}"
+    print(f"omarchy-agent-usage-devin: {detail}", file=sys.stderr)
+    return base_record(
+      ready=len(quota.get("limits", [])) > 0,
+      usageStatusText="Devin usage unavailable",
+      authHelpText=detail,
+      **quota,
+    )
   finally:
-    conn.close()
+    if conn is not None:
+      conn.close()
 
 
 def main() -> int:
