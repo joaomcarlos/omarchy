@@ -190,6 +190,46 @@ result3=$(HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" \
   fail "Devin collector --force rescans past the cache" "$result3"
 pass "Devin collector --force rescans past the cache"
 
+# A scan crossing midnight must not stamp the old day's totals with the new
+# date: simulate the date flipping mid-scan, then confirm the entry misses
+# on the next read instead of being served as today's.
+if ! HOME="$TEST_HOME" DEVIN_DATA_DIR="$DEVIN_DATA_DIR" python3 - "$ROOT" <<'PY'
+import importlib.machinery, importlib.util, json, os, sqlite3, sys
+
+loader = importlib.machinery.SourceFileLoader(
+    "agent_usage_devin", os.path.join(sys.argv[1], "bin/omarchy-agent-usage-devin"))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+conn = sqlite3.connect(os.path.join(os.environ["DEVIN_DATA_DIR"], "sessions.db"))
+conn.row_factory = sqlite3.Row
+
+state = {"day": "2000-01-01", "scans": 0}
+mod.today_string = lambda: state["day"]
+
+real_scan = mod.run_scan
+def crossing_scan(c):
+    stats = real_scan(c)
+    state["scans"] += 1
+    state["day"] = "2000-01-02"  # midnight passes while the scan runs
+    return stats
+mod.run_scan = crossing_scan
+
+mod._cached_scan(conn, 0)
+cache_file, _ = mod.cache_paths()
+written = json.loads(cache_file.read_text())
+assert written["scanDate"] == "2000-01-01", written["scanDate"]
+
+# On the new day the stale-dated entry must miss and trigger a fresh scan
+mod._cached_scan(conn, 9999)
+assert state["scans"] == 2, state["scans"]
+PY
+then
+  fail "Devin collector rejects a scan cache written across midnight"
+fi
+pass "Devin collector rejects a scan cache written across midnight"
+
 # Quota / limits from user-status cache
 # Build a minimal protobuf PlanStatus: field 1 (PlanInfo) with field 2 (plan name "Pro"),
 # field 14 (daily_remaining_pct=69), field 15 (weekly_remaining_pct=53),

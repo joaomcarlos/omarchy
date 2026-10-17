@@ -245,9 +245,9 @@ def read_cached_stats(cache_file: Path, max_age_seconds: int) -> dict[str, Any] 
   return stats
 
 
-def write_cached_stats(cache_file: Path, stats: dict[str, Any]) -> None:
+def write_cached_stats(cache_file: Path, stats: dict[str, Any], scan_date: str) -> None:
   try:
-    write_json(cache_file, {"schemaVersion": 1, "scanDate": today_string(), "stats": stats})
+    write_json(cache_file, {"schemaVersion": 1, "scanDate": scan_date, "stats": stats})
   except Exception as exc:
     print(f"omarchy-agent-usage-devin: could not write usage cache ({exc})", file=sys.stderr)
 
@@ -281,8 +281,12 @@ def _cached_scan(conn: sqlite3.Connection, max_age: int) -> dict[str, Any]:
     cached = read_cached_stats(cache_file, max_age)
     if cached is not None:
       return cached
+    # Stamp the cache with the date the scan started on: if midnight passes
+    # mid-scan the totals describe the old day, and a start-dated entry
+    # misses on later reads instead of posing as today's.
+    scan_date = today_string()
     stats = run_scan(conn)
-    write_cached_stats(cache_file, stats)
+    write_cached_stats(cache_file, stats, scan_date)
     return stats
 
 
