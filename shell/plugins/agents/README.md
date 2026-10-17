@@ -107,7 +107,8 @@ Devin reads token stats from the CLI's own SQLite database
 Devin's rate limits come from the user-status cache the TUI writes on every
 startup — the same data the `/usage` slash command renders — so the collector
 reads that cache instead of making its own API call. The cache is refreshed
-whenever you start a Devin session; if it is missing or stale the panel
+whenever you start a Devin session. Old cached limits remain visible with
+a last-updated warning until their reset windows pass; a missing cache
 shows token stats without limits.
 
 Kimi reads `KIMI_API_KEY` first, then `credentials/kimi-code.json` under an explicit `KIMI_CODE_HOME`. Without that override it prefers `~/.kimi-code/credentials/kimi-code.json`, with the legacy `~/.kimi/credentials/kimi-code.json` as a compatibility fallback. An explicit home never borrows another home's sign-in. Its record reports account quotas, without local token or prompt statistics.
