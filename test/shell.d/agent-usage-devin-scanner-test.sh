@@ -19,12 +19,15 @@ mkdir -p "$DEVIN_DATA_DIR"
 now=$(date +%s)
 today=$(date +%Y-%m-%d)
 yesterday=$(date -d yesterday +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+# Noon yesterday, not now-86400: a fixed 24-hour offset can land on the same
+# local date across a DST change, while noon always sits on the intended day.
+yesterday_ts=$(date -d "yesterday 12:00" +%s 2>/dev/null || date -v-1d -v12H +%s)
 
 # Build a mock sessions.db with the schema the collector expects.
-python3 - "$DEVIN_DATA_DIR/sessions.db" "$now" "$today" "$yesterday" <<'PY'
+python3 - "$DEVIN_DATA_DIR/sessions.db" "$now" "$today" "$yesterday" "$yesterday_ts" <<'PY'
 import json, sqlite3, sys
 
-db_path, now, today, yesterday = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+db_path, now, today, yesterday, yesterday_ts = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], int(sys.argv[5])
 
 conn = sqlite3.connect(db_path)
 conn.execute("CREATE TABLE message_nodes (row_id INTEGER PRIMARY KEY, session_id TEXT, node_id INTEGER, parent_node_id INTEGER, chat_message TEXT, created_at INTEGER, metadata TEXT)")
@@ -53,7 +56,7 @@ conn.execute("INSERT INTO message_nodes (session_id, node_id, chat_message, crea
 
 # Yesterday: one turn
 conn.execute("INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES (?, 4, ?, ?)",
-             ("s2", assistant_msg("glm-5-2", 50, 5, 0, 0), now - 86400))
+             ("s2", assistant_msg("glm-5-2", 50, 5, 0, 0), yesterday_ts))
 
 # A row with no metrics should be skipped
 conn.execute("INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES (?, 5, ?, ?)",
@@ -69,8 +72,8 @@ conn.execute("INSERT INTO message_nodes (session_id, node_id, chat_message, crea
 conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's1', 0)", ("hello", now))
 conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's1', 0)", ("world", now))
 conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's3', 0)", ("test", now))
-conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's2', 0)", ("yesterday", now - 86400))
-conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's1', 0)", ("late night", now - 86400))
+conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's2', 0)", ("yesterday", yesterday_ts))
+conn.execute("INSERT INTO prompt_history (content, timestamp, session_id, is_shell) VALUES (?, ?, 's1', 0)", ("late night", yesterday_ts))
 
 conn.commit()
 conn.close()
