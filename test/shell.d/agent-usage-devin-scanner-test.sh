@@ -8,9 +8,10 @@ require_command python3
 TEST_HOME=$(mktemp -d)
 trap 'rm -rf "$TEST_HOME"' EXIT
 
-# Every collector run must use the test cache root: without this, scans would
-# write to (or read from) the real XDG cache when it is set in the environment.
+# Every collector run must use the test cache roots: without these, scans would
+# write to (or read from) the real caches when they are set in the environment.
 export XDG_CACHE_HOME="$TEST_HOME/.cache"
+export DEVIN_CACHE_DIR="$TEST_HOME/.cache/devin/cli"
 
 DEVIN_DATA_DIR="$TEST_HOME/.local/share/devin/cli"
 mkdir -p "$DEVIN_DATA_DIR"
